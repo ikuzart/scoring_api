@@ -89,8 +89,13 @@ class Request(metaclass=RequestMeta):
 
         self.not_empty_fields = []
         for field in self._fields:
+
             if field.name not in request and field.is_required:
                 raise ValueError
+
+            if field.name not in request:
+                continue
+
             if not request[field.name] and not field.is_nullable:
                 raise ValueError
 
@@ -149,10 +154,10 @@ class GenderField(Field):
 
 class ClientIDsField(Field):
     def validate(self):
-        if not isinstance(self.value, dict):
+        if not isinstance(self.value, list):
             raise ValueError
         for cid in self.value:
-            if isinstance(cid, int):
+            if not isinstance(cid, int):
                 raise ValueError
 
 
@@ -173,12 +178,14 @@ class OnlineScoreRequest(Request):
     def has(self):
         return self.not_empty_fields
 
-    field_pairs = [("phone", "email"), ("first_name", "last_name"), ("gender", "birthday")]
+    @property
+    def field_pairs(self):
+        return [("phone", "email"), ("first_name", "last_name"), ("gender", "birthday")]
 
     def validate(self):
-        for pair in self.field_pairs:
-            if all(x in self.not_empty_fields for x in pair):
-                return True
+        for valid_field_pair in self.field_pairs:
+            if all(field in self.not_empty_fields for field in valid_field_pair):
+                break
         raise ValueError
 
 
