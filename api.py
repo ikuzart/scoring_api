@@ -1,4 +1,3 @@
-import abc
 import datetime
 import json
 import logging
@@ -37,71 +36,46 @@ GENDERS = {
 }
 
 
-class Field(metaclass=abc.ABCMeta):
-
-    name = None
+class Field:
 
     def __init__(self, required: bool, nullable: bool):
-        self._required = required
-        self._nullable = nullable
+        self.required = required
+        self.nullable = nullable
         self._value = None
-
-    @property
-    def is_required(self):
-        return self._required
-
-    @property
-    def is_nullable(self):
-        return self._nullable
 
     @property
     def value(self):
         return self._value
 
     @value.setter
-    def value(self, new_value):
-        self._value = new_value
+    def value(self, value):
+        self._value = value
+        self.validate()
 
-    @abc.abstractmethod
     def validate(self):
         pass
 
 
-class RequestMeta(type):
-
-    def __new__(mcs, name, bases, attrs):
-        _fields = []
-        for attr_name, attr in attrs.items():
-            if isinstance(attr, Field):
-                attrs[attr_name].name = attr_name
-                _fields.append(attr)
-        cls = super().__new__(mcs, name, bases, attrs)
-        cls._fields = _fields
-
-        return cls
-
-
-class Request(metaclass=RequestMeta):
+class Request:
 
     def __init__(self, request: Dict[str, Union[int, str, Dict[str, str], List[int]]]):
         if not request:
             raise ValueError
-
         self.not_empty_fields = []
-        for field in self._fields:
-
-            if field.name not in request and field.is_required:
-                raise ValueError
-
-            if field.name not in request:
+        for attr in dir(self):
+            if attr.startswith("__"):
                 continue
-
-            if not request[field.name] and not field.is_nullable:
+            field = getattr(self, attr)
+            if not isinstance(field, Field):
+                continue
+            if attr in request:
+                self.not_empty_fields.append(attr)
+                field.value = request[attr]
+            if field.required and attr not in request:
                 raise ValueError
-
-            if request[field.name]:
-                self.not_empty_fields.append(field.name)
-            setattr(self, field.name, request[field.name])
+            print(field.value)
+            if not field.nullable and not field.value:
+                raise ValueError
         self.validate()
 
     def validate(self):
@@ -128,7 +102,7 @@ class EmailField(CharField):
 
 class PhoneField(Field):
     def validate(self):
-        if not isinstance(self.value, (int, str)) and not re.match(r"7\d{10}", str(self.value)):
+        if not isinstance(self.value, (int, str)) or not re.match(r"7\d{10}", str(self.value)):
             raise ValueError
 
 
@@ -140,15 +114,15 @@ class DateField(Field):
 class BirthDayField(Field):
 
     def validate(self):
-        birthday_date = datetime.datetime.strptime(self, '%d.%m.%Y')
+        birthday_date = datetime.datetime.strptime(self.value, '%d.%m.%Y')
         delta = datetime.datetime.now().year - birthday_date.year
-        if 0 <= delta < 70:
+        if delta <= 0 or delta > 70:
             raise ValueError
 
 
 class GenderField(Field):
     def validate(self):
-        if self.value != UNKNOWN or self.value != MALE or self.value != FEMALE:
+        if self.value not in (UNKNOWN, MALE, FEMALE):
             raise ValueError
 
 
@@ -185,7 +159,7 @@ class OnlineScoreRequest(Request):
     def validate(self):
         for valid_field_pair in self.field_pairs:
             if all(field in self.not_empty_fields for field in valid_field_pair):
-                break
+                return
         raise ValueError
 
 
@@ -198,15 +172,15 @@ class MethodRequest(Request):
 
     @property
     def is_admin(self):
-        return self.login == ADMIN_LOGIN
+        return self.login.value == ADMIN_LOGIN
 
 
 def check_auth(request):
     if request.is_admin:
         digest = hashlib.sha512((datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT).encode("utf-8")).hexdigest()
     else:
-        digest = hashlib.sha512((request.account + request.login + SALT).encode("utf-8")).hexdigest()
-    if digest == request.token:
+        digest = hashlib.sha512((request.account.value + request.login.value + SALT).encode("utf-8")).hexdigest()
+    if digest == request.token.value:
         return True
     return False
 
@@ -217,38 +191,35 @@ def online_score_handler(method_request, ctx, store):
         return {"score": 42}, OK
 
     try:
-        score_request = OnlineScoreRequest(method_request.arguments)
+        score_request = OnlineScoreRequest(method_request.arguments.value)
     except ValueError:
         return ERRORS[INVALID_REQUEST], INVALID_REQUEST
 
     ctx["has"] = score_request.has
 
-    score = get_score(store=store, phone=score_request.phone, email=score_request.email,
-                      birthday=score_request.birthday, gender=score_request.birthday,
-                      first_name=score_request.first_name, last_name=score_request.last_name)
-
+    score = get_score(store=store, phone=score_request.phone.value, email=score_request.email.value,
+                      birthday=score_request.birthday.value, gender=score_request.birthday.value,
+                      first_name=score_request.first_name.value, last_name=score_request.last_name.value)
     return {"score": score}, OK
 
 
 def clients_interests_handler(method_request, ctx, store):
     try:
-        interests_request = ClientsInterestsRequest(method_request.arguments)
+        interests_request = ClientsInterestsRequest(method_request.arguments.value)
     except ValueError:
         return ERRORS[INVALID_REQUEST], INVALID_REQUEST
 
     interests = {}
-    for cid in interests_request.client_ids:
+    for cid in interests_request.client_ids.value:
         interests[cid] = get_interests(store, cid)
 
-    ctx["nclients"] = len(interests_request.client_ids)
+    ctx["nclients"] = len(interests_request.client_ids.value)
 
     return interests, OK
 
 
 def method_handler(request, ctx, store):
 
-    if isinstance(request, dict) and "body" not in request:
-        return ERRORS[BAD_REQUEST], BAD_REQUEST
     try:
         method_request = MethodRequest(request["body"])
     except ValueError:
@@ -256,9 +227,9 @@ def method_handler(request, ctx, store):
 
     if not check_auth(method_request):
         response, code = ERRORS[FORBIDDEN], FORBIDDEN
-    elif method_request.method == "online_score":
+    elif method_request.method.value == "online_score":
         response, code = online_score_handler(method_request, ctx, store)
-    elif method_request.method == "clients_interests":
+    elif method_request.method.value == "clients_interests":
         response, code = clients_interests_handler(method_request, ctx, store)
     else:
         return ERRORS[INVALID_REQUEST], INVALID_REQUEST
