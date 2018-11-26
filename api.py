@@ -36,103 +36,127 @@ GENDERS = {
 }
 
 
+class ValidationError(Exception):
+    pass
+
+
 class Field:
 
     def __init__(self, required: bool, nullable: bool):
         self.required = required
         self.nullable = nullable
-        self._value = None
 
-    @property
-    def value(self):
-        return self._value
+    def __set_name__(self, owner, name):
+        self.name = name
 
-    @value.setter
-    def value(self, value):
-        self._value = value
-        self.validate()
+    def __get__(self, instance, owner):
+        return instance.__dict__.get(self.name, None)
 
-    def validate(self):
-        pass
+    def __set__(self, instance, value):
+        self._validate(value)
+        instance.__dict__[self.name] = value
+
+    @staticmethod
+    def _validate(value) -> bool:
+        raise NotImplementedError
 
 
-class Request:
+class RequestMeta(type):
+
+    def __new__(mcs, name, bases, dct):
+        cls = super().__new__(mcs, name, bases, dct)
+        cls._fields = {}
+        for attr_name, attr_value in dct.items():
+            if not isinstance(attr_value, Field):
+                continue
+            cls._fields[attr_name] = attr_value
+
+        return cls
+
+
+class Request(metaclass=RequestMeta):
 
     def __init__(self, request: Dict[str, Union[int, str, Dict[str, str], List[int]]]):
-        if not request:
-            raise ValueError
-        self.not_empty_fields = []
-        for attr in dir(self):
-            if attr.startswith("__"):
+        self.request = request
+        self.not_empty_req_fields = []
+        for field_name, field_value in self._fields.items():
+            self._validate_request_field(field_name, field_value)
+            if field_name not in request:
                 continue
-            field = getattr(self, attr)
-            if not isinstance(field, Field):
-                continue
-            if attr in request:
-                self.not_empty_fields.append(attr)
-                field.value = request[attr]
-            if field.required and attr not in request:
-                raise ValueError
-            print(field.value)
-            if not field.nullable and not field.value:
-                raise ValueError
-        self.validate()
+            setattr(self, field_name, request[field_name])
+            self.not_empty_req_fields.append(field_name)
 
-    def validate(self):
-        pass
+    def _validate_request_field(self, field_name: str, field_value: Field):
+        if field_value.required and field_name not in self.request:
+            raise ValidationError("No required field {} value".format(field_name))
+        if not field_value.nullable and not self.request[field_name]:
+            raise ValidationError("No value for not nullable field {}".format(field_name))
 
 
 class CharField(Field):
-    def validate(self):
-        if not isinstance(self.value, str):
-            raise ValueError
+    @staticmethod
+    def _validate(value):
+        if not isinstance(value, str):
+            raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class ArgumentsField(Field):
-    def validate(self):
-        if not isinstance(self.value, dict):
-            raise ValueError
+    @staticmethod
+    def _validate(value):
+        if not isinstance(value, dict):
+            raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class EmailField(CharField):
-    def validate(self):
-        if "@" not in self.value:
-            raise ValueError
+    @staticmethod
+    def _validate(value):
+        if "@" not in value:
+            raise ValidationError("Field {} got invalid value".format(__name__))
 
 
 class PhoneField(Field):
-    def validate(self):
-        if not isinstance(self.value, (int, str)) or not re.match(r"7\d{10}", str(self.value)):
-            raise ValueError
+    @staticmethod
+    def _validate(value):
+        if not isinstance(value, (str, int)) or not re.match(r"7\d{10}", str(value)):
+            raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class DateField(Field):
-    def validate(self):
-        datetime.datetime.strptime(self.value, '%d.%m.%Y')
+    @staticmethod
+    def _validate(value):
+        try:
+            datetime.datetime.strptime(value, '%d.%m.%Y')
+        except ValueError:
+            raise ValidationError("Date value for {} not of is incorrect".format(__name__))
 
 
 class BirthDayField(Field):
-
-    def validate(self):
-        birthday_date = datetime.datetime.strptime(self.value, '%d.%m.%Y')
+    @staticmethod
+    def _validate(value):
+        try:
+            birthday_date = datetime.datetime.strptime(value, '%d.%m.%Y')
+        except ValueError:
+            raise ValidationError("Date value for {} not of is incorrect".format(__name__))
         delta = datetime.datetime.now().year - birthday_date.year
-        if delta <= 0 or delta > 70:
-            raise ValueError
+        if delta > 70:
+            raise ValidationError("Age is more than allowed value".format(__name__))
 
 
 class GenderField(Field):
-    def validate(self):
-        if self.value not in (UNKNOWN, MALE, FEMALE):
-            raise ValueError
+    @staticmethod
+    def _validate(value):
+        if value not in (UNKNOWN, MALE, FEMALE):
+            raise ValidationError("Field {} got invalid value".format(__name__))
 
 
 class ClientIDsField(Field):
-    def validate(self):
-        if not isinstance(self.value, list):
-            raise ValueError
-        for cid in self.value:
+    @staticmethod
+    def _validate(value):
+        if not isinstance(value, list):
+            raise ValidationError("Value for {} not of a correct type".format(__name__))
+        for cid in value:
             if not isinstance(cid, int):
-                raise ValueError
+                raise ValidationError("Field {} got invalid value".format(__name__))
 
 
 class ClientsInterestsRequest(Request):
@@ -150,17 +174,21 @@ class OnlineScoreRequest(Request):
 
     @property
     def has(self):
-        return self.not_empty_fields
+        return self.not_empty_req_fields
 
     @property
     def field_pairs(self):
         return [("phone", "email"), ("first_name", "last_name"), ("gender", "birthday")]
 
-    def validate(self):
+    def __init__(self, request: Dict[str, Union[int, str, Dict[str, str], List[int]]]):
+        super().__init__(request)
+        self._validate_pairs()
+
+    def _validate_pairs(self):
         for valid_field_pair in self.field_pairs:
-            if all(field in self.not_empty_fields for field in valid_field_pair):
+            if all(field in self.not_empty_req_fields for field in valid_field_pair):
                 return
-        raise ValueError
+        raise ValidationError("Do not have values for valid field pairs")
 
 
 class MethodRequest(Request):
@@ -172,15 +200,15 @@ class MethodRequest(Request):
 
     @property
     def is_admin(self):
-        return self.login.value == ADMIN_LOGIN
+        return self.login == ADMIN_LOGIN
 
 
 def check_auth(request):
     if request.is_admin:
         digest = hashlib.sha512((datetime.datetime.now().strftime("%Y%m%d%H") + ADMIN_SALT).encode("utf-8")).hexdigest()
     else:
-        digest = hashlib.sha512((request.account.value + request.login.value + SALT).encode("utf-8")).hexdigest()
-    if digest == request.token.value:
+        digest = hashlib.sha512((request.account + request.login + SALT).encode("utf-8")).hexdigest()
+    if digest == request.token:
         return True
     return False
 
@@ -191,48 +219,51 @@ def online_score_handler(method_request, ctx, store):
         return {"score": 42}, OK
 
     try:
-        score_request = OnlineScoreRequest(method_request.arguments.value)
-    except ValueError:
-        return ERRORS[INVALID_REQUEST], INVALID_REQUEST
+        score_request = OnlineScoreRequest(method_request.arguments)
+    except ValidationError as err:
+        return str(err), INVALID_REQUEST
 
     ctx["has"] = score_request.has
-
-    score = get_score(store=store, phone=score_request.phone.value, email=score_request.email.value,
-                      birthday=score_request.birthday.value, gender=score_request.birthday.value,
-                      first_name=score_request.first_name.value, last_name=score_request.last_name.value)
+    score = get_score(store=store, phone=score_request.phone, email=score_request.email,
+                      birthday=score_request.birthday, gender=score_request.birthday,
+                      first_name=score_request.first_name, last_name=score_request.last_name)
     return {"score": score}, OK
 
 
 def clients_interests_handler(method_request, ctx, store):
     try:
-        interests_request = ClientsInterestsRequest(method_request.arguments.value)
-    except ValueError:
-        return ERRORS[INVALID_REQUEST], INVALID_REQUEST
+        interests_request = ClientsInterestsRequest(method_request.arguments)
+    except ValidationError as err:
+        return str(err), INVALID_REQUEST
 
     interests = {}
-    for cid in interests_request.client_ids.value:
+    for cid in interests_request.client_ids:
         interests[cid] = get_interests(store, cid)
 
-    ctx["nclients"] = len(interests_request.client_ids.value)
+    ctx["nclients"] = len(interests_request.client_ids)
 
     return interests, OK
 
 
 def method_handler(request, ctx, store):
+    handlers = {"online_score": online_score_handler,
+                "clients_interests": clients_interests_handler}
+
+    if not request["body"]:
+        return "Request body is empty", INVALID_REQUEST
 
     try:
         method_request = MethodRequest(request["body"])
-    except ValueError:
-        return ERRORS[INVALID_REQUEST], INVALID_REQUEST
+    except ValidationError as err:
+        return str(err), INVALID_REQUEST
 
     if not check_auth(method_request):
-        response, code = ERRORS[FORBIDDEN], FORBIDDEN
-    elif method_request.method.value == "online_score":
-        response, code = online_score_handler(method_request, ctx, store)
-    elif method_request.method.value == "clients_interests":
-        response, code = clients_interests_handler(method_request, ctx, store)
-    else:
-        return ERRORS[INVALID_REQUEST], INVALID_REQUEST
+        return ERRORS[FORBIDDEN], FORBIDDEN
+
+    handler = handlers.get(method_request.method)
+    if not handler:
+        return "No method handler for {}".format(method_request.method), INVALID_REQUEST
+    response, code = handler(method_request, ctx, store)
 
     return response, code
 
