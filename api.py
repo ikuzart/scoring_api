@@ -53,11 +53,10 @@ class Field:
         return instance.__dict__.get(self.name, None)
 
     def __set__(self, instance, value):
-        self._validate(value)
+        self.validate(value)
         instance.__dict__[self.name] = value
 
-    @staticmethod
-    def _validate(value) -> bool:
+    def validate(self, value) -> bool:
         raise NotImplementedError
 
 
@@ -94,64 +93,54 @@ class Request(metaclass=RequestMeta):
 
 
 class CharField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         if not isinstance(value, str):
             raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class ArgumentsField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         if not isinstance(value, dict):
             raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class EmailField(CharField):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
+        super().validate(value)
         if "@" not in value:
             raise ValidationError("Field {} got invalid value".format(__name__))
 
 
 class PhoneField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         if not isinstance(value, (str, int)) or not re.match(r"7\d{10}", str(value)):
             raise ValidationError("Value for {} not of a correct type".format(__name__))
 
 
 class DateField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         try:
             datetime.datetime.strptime(value, '%d.%m.%Y')
         except ValueError:
             raise ValidationError("Date value for {} not of is incorrect".format(__name__))
 
 
-class BirthDayField(Field):
-    @staticmethod
-    def _validate(value):
-        try:
-            birthday_date = datetime.datetime.strptime(value, '%d.%m.%Y')
-        except ValueError:
-            raise ValidationError("Date value for {} not of is incorrect".format(__name__))
-        delta = datetime.datetime.now().year - birthday_date.year
+class BirthDayField(DateField):
+    def validate(self, value):
+        super().validate(value)
+        delta = datetime.datetime.now().year - datetime.datetime.strptime(value, '%d.%m.%Y').year
         if delta > 70:
             raise ValidationError("Age is more than allowed value".format(__name__))
 
 
 class GenderField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         if value not in (UNKNOWN, MALE, FEMALE):
             raise ValidationError("Field {} got invalid value".format(__name__))
 
 
 class ClientIDsField(Field):
-    @staticmethod
-    def _validate(value):
+    def validate(self, value):
         if not isinstance(value, list):
             raise ValidationError("Value for {} not of a correct type".format(__name__))
         for cid in value:
@@ -285,8 +274,9 @@ class MainHTTPHandler(BaseHTTPRequestHandler):
         try:
             data_string = self.rfile.read(int(self.headers['Content-Length']))
             request = json.loads(data_string)
-        except Exception:
+        except Exception as e:
             code = BAD_REQUEST
+            logging.exception(e)
 
         if request:
             path = self.path.strip("/")
